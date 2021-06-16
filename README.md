@@ -1,5 +1,5 @@
-# pytorch-deep-sets
-PyTorch implementation of parts of "Deep Sets" (NIPS 2017)
+# deep-sets-cluster
+Adapted from PyTorch implementation (https://github.com/yassersouri/pytorch-deep-sets) of parts of "Deep Sets" (NIPS 2017)
 
 ## Requirements
 
