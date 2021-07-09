@@ -16,9 +16,11 @@ def main(random_seed):
     the_experiment = SumOfDigits(lr=1e-3, dsize=100, set_size=1000)
 
     # for i in range(20):
-    for i in range(10):
+    for i in range(20):
         the_experiment.train_1_epoch(i)
         the_experiment.evaluate(i)
+        # torch.save(the_experiment.the_phi.state_dict(), 'trained_phi.pkl')
+        # torch.save(the_experiment.the_rho.state_dict(), 'trained_rho.pkl')
 
 
 if __name__ == '__main__':

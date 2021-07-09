@@ -10,12 +10,13 @@ import datetime
 import os
 from sklearn.manifold import TSNE
 from matplotlib import pyplot as plt
-from sklearn.metrics import rand_score
+from sklearn.metrics import rand_score, adjusted_rand_score, confusion_matrix
 
 from .datasets import MNISTSummation, MNIST_TRANSFORM
 from .networks import InvariantModel, SmallMNISTCNNPhi, SmallRho, ClusterClf, OracleClf
 
 os.makedirs("tsne/", exist_ok=True)
+os.makedirs("cmat/", exist_ok=True)
 
 
 class SumOfDigits(object):
@@ -28,16 +29,23 @@ class SumOfDigits(object):
         # self.test_db = MNISTSummation(min_len=5, max_len=50, dataset_len=dsize, train=False, transform=MNIST_TRANSFORM)
         self.test_db = MNISTSummation(min_len=self.set_size, max_len=self.set_size, dataset_len=dsize, train=False, transform=MNIST_TRANSFORM)
 
-        # self.clf = SmallMNISTCNNPhi(softmax=True)
-        # self.clf = ClusterClf(input_size=10, output_size=10)
-        self.clf = OracleClf(input_size=10, output_size=10)
-        for param in self.clf.parameters():
-            param.requires_grad = False
+        self.clf = ClusterClf(input_size=10, output_size=10)
+        # self.clf = OracleClf(input_size=10, output_size=10)
+        # for param in self.clf.parameters():
+        #     param.requires_grad = False
 
         self.the_phi = SmallMNISTCNNPhi()
+        # self.the_phi.load_state_dict(torch.load('trained_phi.pkl'))
+        # for param in self.the_phi.parameters():
+        #     param.requires_grad = False
+
         self.the_rho = SmallRho(input_size=10, output_size=10)
+        # self.the_rho.load_state_dict(torch.load('trained_rho.pkl'))
+        # for param in self.the_rho.parameters():
+        #     param.requires_grad = False
 
         self.model = InvariantModel(phi=self.the_phi, rho=self.the_rho, clf=self.clf)
+
         if torch.cuda.is_available():
             self.model.cuda()
 
@@ -108,7 +116,13 @@ class SumOfDigits(object):
         the_loss_numpy = the_loss_tensor.numpy().flatten()
         the_loss_float = float(the_loss_numpy[0])
 
+        # cmat = confusion_matrix(pred_labels, target)
+        # plt.figure(figsize=(6, 5))
+        # plt.matshow(cmat)
+        # plt.savefig("cmat/train_%d.png" % item_number)
+
         score = rand_score(pred_labels, target)
+        # score = adjusted_rand_score(pred_labels, target)
 
         return the_loss_float, score
 
@@ -158,7 +172,13 @@ class SumOfDigits(object):
 
         # print(corrects / totals)
 
+        cmat = confusion_matrix(A, B)
+        plt.figure(figsize=(6, 5))
+        plt.matshow(cmat)
+        plt.savefig("cmat/test_%d.png" % epoch)
+
         score = rand_score(A, B)
+        # score = adjusted_rand_score(A, B)
         self.summary_writer.add_scalar('rand_score_eval', score, epoch)
 
         X_2d = tsne.fit_transform(X)
