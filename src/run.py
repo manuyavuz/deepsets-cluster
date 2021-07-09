@@ -1,7 +1,7 @@
 import click
 import numpy as np
 import torch
-
+from tqdm.auto import tqdm, trange
 from deepsets.experiments import SumOfDigits
 from deepsets.settings import RANDOM_SEED
 
@@ -21,7 +21,6 @@ def main(random_seed):
         the_experiment.evaluate(i)
         # torch.save(the_experiment.the_phi.state_dict(), 'trained_phi.pkl')
         # torch.save(the_experiment.the_rho.state_dict(), 'trained_rho.pkl')
-
 
 if __name__ == '__main__':
     main()
