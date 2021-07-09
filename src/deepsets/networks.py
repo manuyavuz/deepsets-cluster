@@ -17,25 +17,28 @@ class InvariantModel(nn.Module):
         self.rho = rho
         self.clf = clf
 
-    def forward(self, x: NetIO) -> NetIO:
+    def forward(self, x: NetIO, y=None) -> NetIO:
         # # compute the representation for each data point
         # x = self.phi.forward(x)
 
         # w = self.clf.forward(x)
         z = self.phi.forward(x)
-        w = self.clf.forward(z)
+        w = self.clf.forward(z, y)
+        z = z.reshape(2, -1, z.size(1))
+        w = w.reshape(2, -1, w.size(1))
 
         # # sum up the representations
         # # here I have assumed that x is 2D and the each row is representation of an input, so the following operation
         # # will reduce the number of rows to 1, but it will keep the tensor as a 2D tensor.
         # x = torch.sum(x, dim=0, keepdim=True)
 
-        x = torch.matmul(w.t(), z)
+        # x = torch.matmul(w.t(), z)
+        x = torch.matmul(w.transpose(1, 2), z)
 
         # compute the output
         out = self.rho.forward(x)
 
-        return out, w
+        return out, w.reshape(-1, w.size(2))
 
 
 class SmallMNISTCNNPhi(nn.Module):
@@ -70,20 +73,31 @@ class SmallRho(nn.Module):
         self.output_size = output_size
 
         self.fc1 = nn.Linear(self.input_size, 10)
-        # self.fc2 = nn.Linear(10, self.output_size)
+        self.fc2 = nn.Linear(10, self.output_size)
 
     def forward(self, x: NetIO) -> NetIO:
         x = F.relu(self.fc1(x))
-        # x = self.fc2(x)
+        x = self.fc2(x)
         return x
 
 
 class ClusterClf(nn.Module):
-    def __init__(self, input_size: int):
+    def __init__(self, input_size: int, output_size: int):
         super().__init__()
         self.input_size = input_size
-        self.fc1 = nn.Linear(self.input_size, 10)
+        self.fc1 = nn.Linear(self.input_size, output_size)
 
-    def forward(self, x: NetIO) -> NetIO:
+    def forward(self, x: NetIO, y=None) -> NetIO:
         x = F.softmax(self.fc1(x), dim=1)
+        return x
+
+
+class OracleClf(ClusterClf):
+    def __init__(self, input_size: int, output_size: int):
+        super().__init__(input_size, output_size)
+
+    def forward(self, x: NetIO, y=None) -> NetIO:
+        # x = super().forward(x, y)
+        x = torch.zeros_like(x)
+        x[range(len(y)), y.squeeze()] = 1
         return x

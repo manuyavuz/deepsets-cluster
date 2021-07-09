@@ -13,7 +13,7 @@ def main(random_seed):
     torch.manual_seed(random_seed)
     torch.cuda.manual_seed_all(random_seed)
 
-    the_experiment = SumOfDigits(lr=1e-3, dsize=100)
+    the_experiment = SumOfDigits(lr=1e-3, dsize=100, set_size=1000)
 
     # for i in range(20):
     for i in range(10):

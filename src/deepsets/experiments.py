@@ -13,26 +13,29 @@ from matplotlib import pyplot as plt
 from sklearn.metrics import rand_score
 
 from .datasets import MNISTSummation, MNIST_TRANSFORM
-from .networks import InvariantModel, SmallMNISTCNNPhi, SmallRho, ClusterClf
+from .networks import InvariantModel, SmallMNISTCNNPhi, SmallRho, ClusterClf, OracleClf
 
 os.makedirs("tsne/", exist_ok=True)
 
 
 class SumOfDigits(object):
-    def __init__(self, lr=1e-3, wd=5e-3, dsize=100000):
+    def __init__(self, lr=1e-3, wd=5e-3, dsize=100000, set_size=500):
         self.lr = lr
         self.wd = wd
+        self.set_size = set_size
         # self.train_db = MNISTSummation(min_len=2, max_len=10, dataset_len=dsize, train=True, transform=MNIST_TRANSFORM)
-        self.train_db = MNISTSummation(min_len=500, max_len=500, dataset_len=dsize, train=True, transform=MNIST_TRANSFORM)
+        self.train_db = MNISTSummation(min_len=self.set_size, max_len=self.set_size, dataset_len=dsize, train=True, transform=MNIST_TRANSFORM)
         # self.test_db = MNISTSummation(min_len=5, max_len=50, dataset_len=dsize, train=False, transform=MNIST_TRANSFORM)
-        self.test_db = MNISTSummation(min_len=500, max_len=500, dataset_len=dsize, train=False, transform=MNIST_TRANSFORM)
+        self.test_db = MNISTSummation(min_len=self.set_size, max_len=self.set_size, dataset_len=dsize, train=False, transform=MNIST_TRANSFORM)
 
         # self.clf = SmallMNISTCNNPhi(softmax=True)
-        self.clf = ClusterClf(input_size=10)
+        # self.clf = ClusterClf(input_size=10, output_size=10)
+        self.clf = OracleClf(input_size=10, output_size=10)
         for param in self.clf.parameters():
             param.requires_grad = False
+
         self.the_phi = SmallMNISTCNNPhi()
-        self.the_rho = SmallRho(input_size=10, output_size=1)
+        self.the_rho = SmallRho(input_size=10, output_size=10)
 
         self.model = InvariantModel(phi=self.the_phi, rho=self.the_rho, clf=self.clf)
         if torch.cuda.is_available():
@@ -43,7 +46,7 @@ class SumOfDigits(object):
         # self.optimizer2 = optim.Adam(self.clf.parameters(), lr=self.lr, weight_decay=self.wd)
 
         self.summary_writer = SummaryWriter(
-            log_dir='/home/rishabhgupta/pytorch-deep-sets/logs/' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+            log_dir='/home/rishabh/deepsets-cluster/logs/' + datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     def train_1_epoch(self, epoch_num: int = 0):
         self.model.train()
@@ -63,7 +66,7 @@ class SumOfDigits(object):
         # self.optimizer1.zero_grad()
         # self.optimizer2.zero_grad()
 
-        pred, w = self.model.forward(x)
+        pred, w = self.model.forward(x, target)
         pred_labels = torch.argmax(w.data, dim=1).cpu().numpy()
         target = torch.squeeze(target).cpu().numpy()
 
@@ -71,13 +74,25 @@ class SumOfDigits(object):
         # the_loss = -torch.sum(torch.cdist(pred, pred)) / 2
 
         cos = torch.nn.CosineSimilarity(dim=0, eps=1e-6)
+
+        # the_loss = 0
+        # count = 0
+        # for i in range(pred.shape[1]):
+        #     for j in range(i):
+        #         # the_loss += F.mse_loss(pred[0, i], pred[0, j])
+        #         the_loss += cos(pred[0, i], pred[0, j])
+        #         count += 1
+        # the_loss = the_loss / count
+
         the_loss = 0
-        count = 0
-        for i in range(pred.shape[0]):
-            for j in range(i):
-                the_loss += cos(pred[i], pred[j])
-                count += 1
-        the_loss = the_loss / count
+        for i in range(pred.shape[1]):
+            neg_loss = 0
+            for j in range(pred.shape[1]):
+                if j == i:
+                    pos_loss = torch.exp(cos(pred[0, i], pred[1, j]))
+                else:
+                    neg_loss += torch.exp(cos(pred[0, i], pred[1, j]))
+            the_loss -= torch.log(pos_loss / neg_loss)
 
         the_loss.backward()
         self.optimizer.step()
@@ -105,8 +120,8 @@ class SumOfDigits(object):
 
         X = np.zeros([len(self.test_db) * 10, 10])
         Y = np.zeros(len(self.test_db) * 10, dtype=int)
-        A = np.zeros(len(self.test_db) * 500, dtype=int)
-        B = np.zeros(len(self.test_db) * 500, dtype=int)
+        A = np.zeros(len(self.test_db) * self.set_size, dtype=int)
+        B = np.zeros(len(self.test_db) * self.set_size, dtype=int)
 
         for i in tqdm(range(len(self.test_db))):
             x, target = self.test_db.__getitem__(i)
@@ -117,10 +132,12 @@ class SumOfDigits(object):
                 x = x.cuda()
 
             # pred = self.model.forward(Variable(x)).data
-            pred, w = self.model.forward(Variable(x))
-            pred = pred.data
+            pred, w = self.model.forward(Variable(x), Variable(target))
+            # embed()
+            # exit()
+            pred = pred.data[0]
             pred_labels = torch.argmax(w.data, dim=1)
-            A[i * 500: (i + 1) * 500] = pred_labels.cpu().numpy()
+            A[i * self.set_size: (i + 1) * self.set_size] = pred_labels.cpu().numpy()
 
             # if torch.cuda.is_available():
             # pred = pred.cpu().numpy().flatten()
@@ -128,7 +145,7 @@ class SumOfDigits(object):
 
             # pred = int(round(float(pred[0])))
             # target = int(round(float(target.numpy()[0])))
-            B[i * 500: (i + 1) * 500] = torch.squeeze(target).cpu().numpy()
+            B[i * self.set_size: (i + 1) * self.set_size] = torch.squeeze(target).cpu().numpy()
             Y[i * 10: (i + 1) * 10] = np.arange(10)
 
             # totals[item_size] += 1
