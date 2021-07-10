@@ -190,7 +190,9 @@ class SumOfDigits(object):
         cmat = confusion_matrix(A, B)
         plt.figure(figsize=(6, 5))
         plt.matshow(cmat)
-        plt.savefig("cmat/test_%d.png" % epoch)
+        image_path = "cmat/test_%d.png" % epoch
+        plt.savefig(image_path)
+        self.record_image_tensorboard(image_path, 'confusion_matrix_rishabh', step=epoch)
 
         score = rand_score(A, B)
         # score = adjusted_rand_score(A, B)
