@@ -52,8 +52,7 @@ class SumOfDigits(object):
             classifier = OracleClf
         elif classifier_type == 'train':
             classifier = ClusterClf
-        self.experiments_dir = Path('experiments')
-        self.out_dir = self.experiments_dir / string_for_dict(kwargs) / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.out_dir = Path('.runs') / string_for_dict(kwargs) / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         self.figures_dir = self.out_dir / 'figures'
         self.checkpoints_dir = self.out_dir / 'checkpoints'
         self.logs_dir = self.out_dir / 'logs'
