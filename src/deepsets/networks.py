@@ -100,5 +100,5 @@ class OracleClf(ClusterClf):
     def forward(self, x: NetIO, y=None) -> NetIO:
         # x = super().forward(x, y)
         x = torch.zeros_like(x)
-        x[range(len(y)), y.squeeze()] = 1
+        x[range(y.shape[0]), y.squeeze()] = 1
         return x

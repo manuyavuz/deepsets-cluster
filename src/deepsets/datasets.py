@@ -10,7 +10,9 @@ from IPython import embed
 
 from .settings import DATA_ROOT
 
-MNIST_TRANSFORM = Compose([ToTensor(), Normalize((0.1307,), (0.3081,))])
+MNIST_MEAN = 0.1307
+MNIST_STD = 0.3081
+MNIST_TRANSFORM = Compose([ToTensor(), Normalize((MNIST_MEAN,), (MNIST_STD,))])
 
 
 class MNISTSummation(Dataset):
