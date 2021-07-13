@@ -85,7 +85,8 @@ class ClusterClf(nn.Module):
     def __init__(self, input_size: int, output_size: int):
         super().__init__()
         self.input_size = input_size
-        self.fc1 = nn.Linear(self.input_size, output_size)
+        self.output_size = output_size
+        self.fc1 = nn.Linear(self.input_size, self.output_size)
 
     def forward(self, x: NetIO, y=None) -> NetIO:
         x = F.softmax(self.fc1(x), dim=1)
@@ -99,5 +100,5 @@ class OracleClf(ClusterClf):
     def forward(self, x: NetIO, y=None) -> NetIO:
         # x = super().forward(x, y)
         x = torch.zeros_like(x)
-        x[range(len(y)), y.squeeze()] = 1
+        x[range(y.shape[0]), y.squeeze()] = 1
         return x
