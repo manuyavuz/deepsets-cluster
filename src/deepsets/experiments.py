@@ -46,6 +46,7 @@ class SumOfDigits(object):
         classifier_type = kwargs['classifier_type']
         encoder_type = kwargs['encoder_type']
         model_path = kwargs['model_path']
+        normalize_weights = kwargs['normalize_weights']
         self.loss_type = kwargs['loss_type']
 
         if classifier_type == 'oracle':
@@ -57,6 +58,7 @@ class SumOfDigits(object):
         self.checkpoints_dir = self.out_dir / 'checkpoints'
         self.logs_dir = self.out_dir / 'logs'
 
+        print(f"Writing results under {self.out_dir}")
         self.out_dir.mkdir(exist_ok=True, parents=True)
         self.figures_dir.mkdir(exist_ok=True, parents=True)
         self.checkpoints_dir.mkdir(exist_ok=True, parents=True)
@@ -64,13 +66,13 @@ class SumOfDigits(object):
 
 
         self.clf = classifier(input_size=10, output_size=10)
-        wandb.init(sync_tensorboard=True, magic=True, tags=tags_for_dict(kwargs))
+        wandb.init(project='set-cluster', entity='set-cluster', sync_tensorboard=True, magic=True, tags=tags_for_dict(kwargs))
 
         self.the_phi = SmallMNISTCNNPhi()
         self.the_rho = SmallRho(input_size=10, output_size=10)
 
         if encoder_type in ['pretrained', 'finetune']:
-            assert model_path is not None, 'Model path is not provided'
+            assert model_path is not None and len(model_path) > 0, 'Model path is not provided!'
             model_path = Path(model_path)
             assert model_path.exists(), f'Model path "{model_path}" does not exist!'
             self.the_phi.load_state_dict(torch.load(model_path / 'trained_phi.pt'))
@@ -82,7 +84,7 @@ class SumOfDigits(object):
                 param.requires_grad = False
 
 
-        self.model = InvariantModel(phi=self.the_phi, rho=self.the_rho, clf=self.clf)
+        self.model = InvariantModel(phi=self.the_phi, rho=self.the_rho, clf=self.clf, normalize_weights=normalize_weights)
         wandb.watch(self.model, log_freq=10, log='all')
         if torch.cuda.is_available():
             self.model.cuda()

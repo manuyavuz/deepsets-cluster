@@ -6,20 +6,20 @@ from tqdm.auto import tqdm, trange
 from deepsets.experiments import SumOfDigits
 from deepsets.settings import RANDOM_SEED
 
-
 @click.command()
 @click.option('--seed', envvar='SEED', default=RANDOM_SEED, show_default=True)
 @click.option('--classifier', envvar='CLASSIFIER', default='train', type=click.Choice(['oracle', 'train']))
 @click.option('--encoder', envvar='ENCODER', default='train', type=click.Choice(['pretrained', 'finetune', 'train']))
 @click.option('--model-path', envvar='MODEL_PATH', default='', type=str)
 @click.option('--loss', envvar='LOSS', default='contrastive', type=click.Choice(['contrastive', 'contrastive_entropic_reg']))
-def main(seed, classifier, encoder, model_path, loss):
+@click.option('--normalize-weights', envvar='NORMALIZE_WEIGHTS', default=False, type=bool)
+def main(seed, classifier, encoder, model_path, loss, normalize_weights):
     random.seed(0)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    the_experiment = SumOfDigits(lr=1e-3, dsize=100, set_size=1000, classifier_type=classifier, encoder_type=encoder, model_path=model_path, loss_type=loss)
+    the_experiment = SumOfDigits(lr=1e-3, dsize=100, set_size=1000, classifier_type=classifier, encoder_type=encoder, model_path=model_path, loss_type=loss, normalize_weights=normalize_weights)
 
     # for i in range(20):
     for i in trange(20):

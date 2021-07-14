@@ -11,11 +11,12 @@ NetIO = Union[FloatTensor, Variable]
 
 
 class InvariantModel(nn.Module):
-    def __init__(self, phi: nn.Module, rho: nn.Module, clf: nn.Module):
+    def __init__(self, phi: nn.Module, rho: nn.Module, clf: nn.Module, normalize_weights=False):
         super().__init__()
         self.phi = phi
         self.rho = rho
         self.clf = clf
+        self.normalize_weights = normalize_weights
 
     def forward(self, x: NetIO, y=None) -> NetIO:
         # # compute the representation for each data point
@@ -27,6 +28,8 @@ class InvariantModel(nn.Module):
         z = z.reshape(2, -1, z.size(1))
         w = w.reshape(2, -1, w.size(1))
 
+        if self.normalize_weights:
+            w = w.divide(w.sum(dim=1).unsqueeze(1))
         # # sum up the representations
         # # here I have assumed that x is 2D and the each row is representation of an input, so the following operation
         # # will reduce the number of rows to 1, but it will keep the tensor as a 2D tensor.
