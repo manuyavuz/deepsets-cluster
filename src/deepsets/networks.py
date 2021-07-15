@@ -29,14 +29,14 @@ class InvariantModel(nn.Module):
         w = w.reshape(2, -1, w.size(1))
 
         if self.normalize_weights:
-            w = w.divide(w.sum(dim=1).unsqueeze(1))
+            w_norm = w.divide(w.sum(dim=1).unsqueeze(1))
         # # sum up the representations
         # # here I have assumed that x is 2D and the each row is representation of an input, so the following operation
         # # will reduce the number of rows to 1, but it will keep the tensor as a 2D tensor.
         # x = torch.sum(x, dim=0, keepdim=True)
 
         # x = torch.matmul(w.t(), z)
-        x = torch.matmul(w.transpose(1, 2), z)
+        x = torch.matmul(w_norm.transpose(1, 2), z)
 
         # compute the output
         out = self.rho.forward(x)
