@@ -25,6 +25,7 @@ import seaborn as sns
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 from pathlib import Path
 
+from torch.utils.data import Dataset, DataLoader
 import wandb
 
 def string_for_dict(dict):
@@ -34,20 +35,24 @@ def tags_for_dict(dict):
     return [f'{k}:{v}' for k,v in dict.items()]
 
 class SumOfDigits(object):
-    def __init__(self, lr=1e-3, wd=5e-3, dsize=100000, set_size=500, **kwargs):
-        self.lr = lr
-        self.wd = wd
-        self.set_size = set_size
+    def __init__(self, **kwargs):
+        wandb.init(project='set-cluster', entity='set-cluster', sync_tensorboard=True, config=kwargs)
+        self.lr = kwargs['lr']
+        self.wd = kwargs['wd']
+        self.set_size = kwargs['set_size']
+        self.n_sets = kwargs['n_sets']
         # self.train_db = MNISTSummation(min_len=2, max_len=10, dataset_len=dsize, train=True, transform=MNIST_TRANSFORM)
-        self.train_db = MNISTSummation(min_len=self.set_size, max_len=self.set_size, dataset_len=dsize, train=True, transform=MNIST_TRANSFORM)
+        self.train_db = MNISTSummation(min_len=self.set_size, max_len=self.set_size, dataset_len=self.n_sets, train=True, transform=MNIST_TRANSFORM)
         # self.test_db = MNISTSummation(min_len=5, max_len=50, dataset_len=dsize, train=False, transform=MNIST_TRANSFORM)
-        self.test_db = MNISTSummation(min_len=self.set_size, max_len=self.set_size, dataset_len=dsize, train=False, transform=MNIST_TRANSFORM)
+        self.test_db = MNISTSummation(min_len=self.set_size, max_len=self.set_size, dataset_len=self.n_sets, train=False, transform=MNIST_TRANSFORM)
+        self.test_loader = DataLoader(self.test_db, pin_memory=True, batch_size=len(self.test_db), shuffle=True)
 
-        classifier_type = kwargs['classifier_type']
-        encoder_type = kwargs['encoder_type']
+        classifier_type = kwargs['classifier']
+        encoder_type = kwargs['encoder']
         model_path = kwargs['model_path']
         normalize_weights = kwargs['normalize_weights']
-        self.loss_type = kwargs['loss_type']
+        normalize_weights_for_predictions = kwargs['normalize_weights_for_predictions']
+        self.loss_type = kwargs['loss']
 
         if classifier_type == 'oracle':
             classifier = OracleClf
@@ -66,7 +71,6 @@ class SumOfDigits(object):
 
 
         self.clf = classifier(input_size=10, output_size=10)
-        wandb.init(project='set-cluster', entity='set-cluster', sync_tensorboard=True, magic=True, tags=tags_for_dict(kwargs))
 
         self.the_phi = SmallMNISTCNNPhi()
         self.the_rho = SmallRho(input_size=10, output_size=10)
@@ -75,8 +79,8 @@ class SumOfDigits(object):
             assert model_path is not None and len(model_path) > 0, 'Model path is not provided!'
             model_path = Path(model_path)
             assert model_path.exists(), f'Model path "{model_path}" does not exist!'
-            self.the_phi.load_state_dict(torch.load(model_path / 'trained_phi.pt'))
-            self.the_rho.load_state_dict(torch.load(model_path / 'trained_rho.pt'))
+            self.the_phi.load_state_dict(torch.load(model_path / 'trained_phi_latest.pt'))
+            self.the_rho.load_state_dict(torch.load(model_path / 'trained_rho_latest.pt'))
         if encoder_type == 'pretrained':
             for param in self.the_phi.parameters():
                 param.requires_grad = False
@@ -84,7 +88,7 @@ class SumOfDigits(object):
                 param.requires_grad = False
 
 
-        self.model = InvariantModel(phi=self.the_phi, rho=self.the_rho, clf=self.clf, normalize_weights=normalize_weights)
+        self.model = InvariantModel(phi=self.the_phi, rho=self.the_rho, clf=self.clf, normalize_weights=normalize_weights, normalize_weights_for_predictions=normalize_weights_for_predictions)
         wandb.watch(self.model, log_freq=10, log='all')
         if torch.cuda.is_available():
             self.model.cuda()
@@ -174,10 +178,16 @@ class SumOfDigits(object):
         total_predictions = []
         total_targets = []
         cluster_input_centroids = [[] for i in range(self.model.rho.output_size)]
+        x_idx = []
+        for idx, data in enumerate(self.test_loader):
+            info = torch.utils.data.get_worker_info()
+            pass
+
         for i in trange(len(self.test_db), leave=False):
             x, target = self.test_db.__getitem__(i)
-
             item_size = x.shape[0]
+
+            x_idx.append(self.test_db.mnist_items[i])
 
             if torch.cuda.is_available():
                 x = x.cuda()
@@ -185,8 +195,8 @@ class SumOfDigits(object):
             # pred = self.model.forward(Variable(x)).data
             pred, w = self.model.forward(Variable(x), Variable(target))
             pred = pred.data[0]
-            pred_labels = torch.argmax(w.data, dim=1)
-            A[i * self.set_size: (i + 1) * self.set_size] = pred_labels.cpu().numpy()
+            pred_labels = torch.argmax(w.data, dim=1).unsqueeze(-1)
+            A[i * self.set_size: (i + 1) * self.set_size] = torch.squeeze(pred_labels).cpu().numpy()
 
             for c in np.arange(10):
                 cluster_input_centroids[c].append(x[pred_labels == c, ::].detach().cpu().numpy())
@@ -200,7 +210,7 @@ class SumOfDigits(object):
             B[i * self.set_size: (i + 1) * self.set_size] = torch.squeeze(target).cpu().numpy()
             Y[i * 10: (i + 1) * 10] = np.arange(10)
 
-            total_predictions.append(pred_labels)
+            total_predictions.append(pred_labels.cpu())
             total_targets.append(target)
 
             # totals[item_size] += 1
@@ -210,23 +220,44 @@ class SumOfDigits(object):
 
         # totals = np.array(totals)
         # corrects = np.array(corrects)
+        total_predictions = torch.cat(total_predictions)
+        total_targets = torch.cat(total_targets)
+        x_idx = np.hstack(x_idx)
 
         # print(corrects / totals)
 
         score = rand_score(A, B)
         # score = adjusted_rand_score(A, B)
         self.summary_writer.add_scalar('rand_score_eval', score, epoch)
+        embeddings_dataset = self.test_db.embeddings_umap
+        target_labels_dataset = self.test_db.mnist.targets.numpy()
+        self.plot_clustering_on_umap(embeddings_dataset, target_labels_dataset, label_type='Ground Truth', epoch=epoch)
+
+        embeddings_set_dataset = self.test_db.embeddings_umap[x_idx]
+        target_labels_set_dataset = self.test_db.mnist.targets[x_idx].numpy()
+        pred_labels_set_dataset = total_predictions
+        self.plot_clustering_on_umap(embeddings_set_dataset, target_labels_set_dataset, label_type='Ground Truth Set Dataset', epoch=epoch)
+        self.plot_clustering_on_umap(embeddings_set_dataset, pred_labels_set_dataset, label_type='Predicted Set Dataset', epoch=epoch)
 
         self.record_cluster_embeddings(X, Y, cluster_input_centroids=cluster_input_centroids, epoch=epoch)
-        self.record_confusion_matrix(torch.cat(total_predictions), torch.cat(total_targets), epoch)
+        self.record_confusion_matrix(total_predictions, total_targets, epoch)
 
         torch.save(self.the_phi.state_dict(), self.checkpoints_dir / f'trained_phi_{epoch}.pt')
         torch.save(self.the_rho.state_dict(), self.checkpoints_dir / f'trained_rho_{epoch}.pt')
-        torch.save(self.the_phi.state_dict(), self.checkpoints_dir / f'trained_phi.pt')
-        torch.save(self.the_rho.state_dict(), self.checkpoints_dir / f'trained_rho.pt')
+        torch.save(self.the_phi.state_dict(), self.checkpoints_dir / f'trained_phi_latest.pt')
+        torch.save(self.the_rho.state_dict(), self.checkpoints_dir / f'trained_rho_latest.pt')
 
-
-
+    def plot_clustering_on_umap(self, embeddings, labels, label_type=None, epoch=None):
+        fig, ax = plt.subplots(figsize=(6,5))
+        plt.title(f'Clustering under UMAP space ({label_type})')
+        color = labels
+        scatter = ax.scatter(embeddings[:, 0], embeddings[:, 1], c=color, cmap="Spectral", s=0.1)
+        plt.legend(*scatter.legend_elements())
+        image_path = self.figures_dir / f'umap_clusters_test_{label_type}_{epoch}.png'
+        fig.savefig(image_path)
+        self.record_image_tensorboard(image_path, f'umap_clusters_{label_type}', step=epoch)
+        plt.close(fig)
+        
     def record_cluster_embeddings(self, X, Y, cluster_input_centroids=None, epoch=None):
         tsne = TSNE(n_components=2, random_state=0)
         X_2d = tsne.fit_transform(X)
@@ -258,7 +289,7 @@ class SumOfDigits(object):
         plt.figure()
         labels = range(10)
         matrix = confusion_matrix(target.cpu().numpy(), pred.cpu().numpy(), labels=labels)
-        sns.heatmap(matrix, xticklabels=labels, yticklabels=labels)
+        sns.heatmap(matrix, xticklabels=labels, yticklabels=labels, cmap='Blues')
         image_path = self.figures_dir / f'conf_matrix_{epoch}.png'
         plt.savefig(image_path)
         self.record_image_tensorboard(image_path, 'confusion_matrix')

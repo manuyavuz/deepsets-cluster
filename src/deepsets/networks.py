@@ -11,12 +11,13 @@ NetIO = Union[FloatTensor, Variable]
 
 
 class InvariantModel(nn.Module):
-    def __init__(self, phi: nn.Module, rho: nn.Module, clf: nn.Module, normalize_weights=False):
+    def __init__(self, phi: nn.Module, rho: nn.Module, clf: nn.Module, normalize_weights=False, normalize_weights_for_predictions=False):
         super().__init__()
         self.phi = phi
         self.rho = rho
         self.clf = clf
         self.normalize_weights = normalize_weights
+        self.normalize_weights_for_predictions = normalize_weights_for_predictions
 
     def forward(self, x: NetIO, y=None) -> NetIO:
         # # compute the representation for each data point
@@ -27,21 +28,29 @@ class InvariantModel(nn.Module):
         w = self.clf.forward(z, y)
         z = z.reshape(2, -1, z.size(1))
         w = w.reshape(2, -1, w.size(1))
-
+        
         if self.normalize_weights:
             w_norm = w.divide(w.sum(dim=1).unsqueeze(1))
+            if self.normalize_weights_for_predictions:
+                w = w_norm
+                w_out = w
+            else:
+                w_out = w
+                w = w_norm
+        else:
+            w_out = w
+
         # # sum up the representations
         # # here I have assumed that x is 2D and the each row is representation of an input, so the following operation
         # # will reduce the number of rows to 1, but it will keep the tensor as a 2D tensor.
         # x = torch.sum(x, dim=0, keepdim=True)
 
         # x = torch.matmul(w.t(), z)
-        x = torch.matmul(w_norm.transpose(1, 2), z)
+        x = torch.matmul(w.transpose(1, 2), z)
 
         # compute the output
         out = self.rho.forward(x)
-
-        return out, w.reshape(-1, w.size(2))
+        return out, w_out.reshape(-1, w_out.size(2))
 
 
 class SmallMNISTCNNPhi(nn.Module):
