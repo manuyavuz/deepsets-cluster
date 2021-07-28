@@ -30,7 +30,8 @@ class InvariantModel(nn.Module):
         w = w.reshape(2, -1, w.size(1))
         
         if self.normalize_weights:
-            w_norm = w.divide(w.sum(dim=1).unsqueeze(1))
+            w_norm = w.divide(w.sum(dim=(0,1), keepdim=True))
+            torch._assert(~(torch.isnan(w_norm).any()), 'NaN value!')
             if self.normalize_weights_for_predictions:
                 w = w_norm
                 w_out = w

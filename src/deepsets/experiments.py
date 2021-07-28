@@ -6,15 +6,15 @@ from torch.utils.tensorboard import SummaryWriter
 from torch import optim
 from torch.autograd import Variable
 from tqdm.auto import tqdm, trange
-from IPython import embed
-import datetime
 import os
-from sklearn.manifold import TSNE
+from cuml.manifold.t_sne import TSNE
+
 from matplotlib import pyplot as plt
 from sklearn.metrics import rand_score, adjusted_rand_score, confusion_matrix
 
 from .datasets import MNISTSummation, MNIST_MEAN, MNIST_STD, MNIST_TRANSFORM
 from .networks import InvariantModel, SmallMNISTCNNPhi, SmallRho, ClusterClf, OracleClf
+from .utils import outdir_for_run
 
 from PIL import Image
 from torchvision import transforms
@@ -27,9 +27,6 @@ from pathlib import Path
 
 from torch.utils.data import Dataset, DataLoader
 import wandb
-
-def string_for_dict(dict):
-    return ','.join([f'{k}:{v}' for k,v in dict.items()])
 
 def tags_for_dict(dict):
     return [f'{k}:{v}' for k,v in dict.items()]
@@ -53,12 +50,13 @@ class SumOfDigits(object):
         normalize_weights = kwargs['normalize_weights']
         normalize_weights_for_predictions = kwargs['normalize_weights_for_predictions']
         self.loss_type = kwargs['loss']
+        self.similarity_metric = kwargs['similarity_metric']
 
         if classifier_type == 'oracle':
             classifier = OracleClf
         elif classifier_type == 'train':
             classifier = ClusterClf
-        self.out_dir = Path('.runs') / string_for_dict(kwargs) / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.out_dir = outdir_for_run(kwargs)
         self.figures_dir = self.out_dir / 'figures'
         self.checkpoints_dir = self.out_dir / 'checkpoints'
         self.logs_dir = self.out_dir / 'logs'
@@ -87,6 +85,7 @@ class SumOfDigits(object):
             for param in self.the_rho.parameters():
                 param.requires_grad = False
 
+        self.joint_training = encoder_type == 'train' and classifier_type == 'train'
 
         self.model = InvariantModel(phi=self.the_phi, rho=self.the_rho, clf=self.clf, normalize_weights=normalize_weights, normalize_weights_for_predictions=normalize_weights_for_predictions)
         wandb.watch(self.model, log_freq=10, log='all')
@@ -98,9 +97,31 @@ class SumOfDigits(object):
         # self.optimizer2 = optim.Adam(self.clf.parameters(), lr=self.lr, weight_decay=self.wd)
 
         self.summary_writer = SummaryWriter(log_dir= self.logs_dir)
+        
+
+    def update_encoder_state(self, freeze:bool):
+        for param in self.the_phi.parameters():
+            param.requires_grad = not freeze
+        for param in self.the_rho.parameters():
+            param.requires_grad = not freeze
+
+    def update_classifier_state(self, freeze:bool):
+        for param in self.clf.parameters():
+            param.requires_grad = not freeze
+
+    def decide_joint_train_policy_if_applicable(self, epoch=None):
+        if not self.joint_training:
+            return
+        if epoch % 3 == 2:
+            self.update_classifier_state(freeze=False)
+            self.update_encoder_state(freeze=True)
+        else:
+            self.update_classifier_state(freeze=True)
+            self.update_encoder_state(freeze=False)
 
     def train_1_epoch(self, epoch_num: int = 0):
         self.model.train()
+        self.decide_joint_train_policy_if_applicable(epoch=epoch_num)
         for i in trange(len(self.train_db), leave=False):
             n_train_steps = i + len(self.train_db) * epoch_num
             loss, score = self.train_1_item(i, n_train_steps)
@@ -118,7 +139,7 @@ class SumOfDigits(object):
             x, target = x.cuda(), target.cuda()
 
         x = Variable(x)
-
+ 
         self.optimizer.zero_grad()
         # self.optimizer1.zero_grad()
         # self.optimizer2.zero_grad()
@@ -130,7 +151,7 @@ class SumOfDigits(object):
 
         target = torch.squeeze(target).cpu().numpy()
 
-        the_loss = self.calculate_loss(pred)
+        the_loss = self.calculate_loss(pred, w, pred_labels, epoch=n_train_steps)
         the_loss.backward()
         self.optimizer.step()
         # if i % 10 == 0:
@@ -151,19 +172,40 @@ class SumOfDigits(object):
 
         return the_loss_float, score
 
-    def calculate_loss(self, pred):
-        cos = torch.nn.CosineSimilarity(dim=0, eps=1e-6)
+    def calculate_pairwise_similarities(self, pred):
+        if self.similarity_metric == 'cosine':
+            sim_fn = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+            n_dim = pred.shape[1]
+            arange = torch.arange(n_dim)
+            pairs = torch.cartesian_prod(arange, arange)
+            sims = sim_fn(pred[0,pairs[:,0]], pred[1,pairs[:,1]]).reshape(n_dim, -1)
+        elif self.similarity_metric == 'gaussian_kernel':
+            sim_fn = lambda x, y: torch.exp(-torch.cdist(x, y))
+            sims = sim_fn(pred[0], pred[1])
+        else:
+            raise NotImplementedError
+        return sims
 
-        the_loss = 0
-        for i in range(pred.shape[1]):
-            neg_loss = 0
-            for j in range(pred.shape[1]):
-                if j == i:
-                    pos_loss = torch.exp(cos(pred[0, i], pred[1, j]))
-                else:
-                    neg_loss += torch.exp(cos(pred[0, i], pred[1, j]))
-            the_loss += -torch.log(pos_loss / neg_loss)
+    def calculate_contrastive_loss(self, pred):
+        sims = self.calculate_pairwise_similarities(pred)
+        exp_sims = torch.exp(sims)
+        divisions = exp_sims.diagonal() / (exp_sims.sum(dim=-1) - exp_sims.diagonal())
+        the_loss = -torch.log(divisions).sum()
         return the_loss
+
+    def calculate_entropy_loss(self, w, pred_labels, epoch=None):
+        entropy = lambda dist: - (dist * dist.log()).sum()
+        # w_entropy = entropy(w)
+        pred_dist = np.unique(pred_labels, return_counts=True)[1]
+        pred_labels_entropy = entropy(torch.tensor(pred_dist / pred_dist.sum()))
+        # self.summary_writer.add_scalar('w_entropy', w_entropy, global_step=epoch)
+        self.summary_writer.add_scalar('pred_labels_entropy', pred_labels_entropy, global_step=epoch)
+        return 0
+
+    def calculate_loss(self, pred, w, pred_labels, epoch=None):
+        contrastive_loss = self.calculate_contrastive_loss(pred)
+        entropy_loss = self.calculate_entropy_loss(w, pred_labels, epoch=epoch)
+        return contrastive_loss + entropy_loss
 
     def evaluate(self, epoch):
         self.model.eval()
@@ -229,15 +271,15 @@ class SumOfDigits(object):
         score = rand_score(A, B)
         # score = adjusted_rand_score(A, B)
         self.summary_writer.add_scalar('rand_score_eval', score, epoch)
-        embeddings_dataset = self.test_db.embeddings_umap
-        target_labels_dataset = self.test_db.mnist.targets.numpy()
-        self.plot_clustering_on_umap(embeddings_dataset, target_labels_dataset, label_type='Ground Truth', epoch=epoch)
+        # embeddings_dataset = self.test_db.embeddings_umap
+        # target_labels_dataset = self.test_db.mnist.targets.numpy()
+        # self.plot_clustering_on_umap(embeddings_dataset, target_labels_dataset, label_type='Ground Truth', epoch=epoch)
 
-        embeddings_set_dataset = self.test_db.embeddings_umap[x_idx]
-        target_labels_set_dataset = self.test_db.mnist.targets[x_idx].numpy()
-        pred_labels_set_dataset = total_predictions
-        self.plot_clustering_on_umap(embeddings_set_dataset, target_labels_set_dataset, label_type='Ground Truth Set Dataset', epoch=epoch)
-        self.plot_clustering_on_umap(embeddings_set_dataset, pred_labels_set_dataset, label_type='Predicted Set Dataset', epoch=epoch)
+        # embeddings_set_dataset = self.test_db.embeddings_umap[x_idx]
+        # target_labels_set_dataset = self.test_db.mnist.targets[x_idx].numpy()
+        # pred_labels_set_dataset = total_predictions
+        # self.plot_clustering_on_umap(embeddings_set_dataset, target_labels_set_dataset, label_type='Ground Truth Set Dataset', epoch=epoch)
+        # self.plot_clustering_on_umap(embeddings_set_dataset, pred_labels_set_dataset, label_type='Predicted Set Dataset', epoch=epoch)
 
         self.record_cluster_embeddings(X, Y, cluster_input_centroids=cluster_input_centroids, epoch=epoch)
         self.record_confusion_matrix(total_predictions, total_targets, epoch)
