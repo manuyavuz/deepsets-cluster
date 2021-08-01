@@ -20,6 +20,7 @@ from deepsets.settings import RANDOM_SEED
 @click.option('--similarity-metric', envvar='SIMILARITY_METRIC', default='cosine', type=click.Choice(['cosine', 'gaussian_kernel']))
 @click.option('--normalize-weights', envvar='NORMALIZE_WEIGHTS', default=True, type=bool)
 @click.option('--normalize-weights-for-predictions', envvar='NORMALIZE_WEIGHTS_FOR_PREDICTIONS', default=True, type=bool)
+@click.option('--iterative-optimization', envvar='ITERATIVE_OPTIMIZATION', default=False)
 def main(seed, **kwargs):
     random.seed(0)
     np.random.seed(seed)
@@ -29,6 +30,7 @@ def main(seed, **kwargs):
 
     for i in trange(kwargs['n_epochs']):
         the_experiment.train_1_epoch(i)
+        the_experiment.evaluate(i, data = 'train')
         the_experiment.evaluate(i)
 
 if __name__ == '__main__':

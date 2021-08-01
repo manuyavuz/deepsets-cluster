@@ -1,3 +1,4 @@
+from collections import namedtuple
 from typing import Union
 
 import torch
@@ -28,7 +29,7 @@ class InvariantModel(nn.Module):
         w = self.clf.forward(z, y)
         z = z.reshape(2, -1, z.size(1))
         w = w.reshape(2, -1, w.size(1))
-        
+        w_orig = w.clone()
         if self.normalize_weights:
             w_norm = w.divide(w.sum(dim=(0,1), keepdim=True))
             torch._assert(~(torch.isnan(w_norm).any()), 'NaN value!')
@@ -51,8 +52,7 @@ class InvariantModel(nn.Module):
 
         # compute the output
         out = self.rho.forward(x)
-        return out, w_out.reshape(-1, w_out.size(2))
-
+        return namedtuple('InvariantModel', ['out', 'w_out', 'w_orig'])(out, w_out.reshape(-1, w_out.size(2)), w_orig.reshape(-1, w_orig.size(2)))
 
 class SmallMNISTCNNPhi(nn.Module):
     def __init__(self, softmax=False):
@@ -100,9 +100,13 @@ class ClusterClf(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
         self.fc1 = nn.Linear(self.input_size, self.output_size)
+        self.net = nn.Sequential(
+            self.fc1,
+            nn.Dropout()
+        )
 
     def forward(self, x: NetIO, y=None) -> NetIO:
-        x = F.softmax(self.fc1(x), dim=1)
+        x = F.softmax(self.net(x), dim=1)
         return x
 
 
