@@ -161,7 +161,7 @@ class SumOfDigits(object):
         the_loss_numpy = the_loss_tensor.numpy().flatten()
         the_loss_float = float(the_loss_numpy[0])
 
-        score = rand_score(pred_labels, target)
+        score = rand_score(target, pred_labels)
         self.summary_writer.add_scalar('train_rand_score', score, n_train_steps)
 
         return the_loss_float, score
@@ -205,18 +205,20 @@ class SumOfDigits(object):
         return pred_labels_entropy
 
     def calculate_loss(self, pred, w, w_orig, pred_labels, epoch=None, record=False):
+        losses = {}
         loss = 0
         contrastive_loss = self.calculate_contrastive_loss(pred)
         loss += contrastive_loss
+        losses['contrastive'] = contrastive_loss
         if self.loss_type == 'contrastive_entropic_reg':
             entropy_loss = self.calculate_entropy_loss(w, w_orig, pred_labels, epoch=epoch, record=record)
             loss += 10 * entropy_loss
+            losses['entropy'] = entropy_loss
+
+
+        losses['total'] = loss
         if record:
-            self.summary_writer.add_scalars('loss', {
-                "contrastive" : contrastive_loss,
-                "entropy" : entropy_loss,
-                'total' : loss
-                }, epoch)
+            self.summary_writer.add_scalars('loss', losses, epoch)
         return loss
 
     def evaluate(self, epoch, data='val'):
@@ -237,18 +239,13 @@ class SumOfDigits(object):
         total_losses = []
         cluster_input_centroids = [[] for i in range(self.model.rho.output_size)]
         x_idx = []
-        for idx, data in enumerate(self.test_loader):
-            info = torch.utils.data.get_worker_info()
-            pass
-
+        scores = []
         for i in trange(len(dataset), leave=False):
             x, target = dataset.__getitem__(i)
-            item_size = x.shape[0]
-
             x_idx.append(dataset.mnist_items[i])
 
             if torch.cuda.is_available():
-                x = x.cuda()
+                x, target = x.cuda(), target.cuda()
 
             result = self.model.forward(x, target)
             pred, w, w_orig = result.out, result.w_out, result.w_orig
@@ -275,6 +272,7 @@ class SumOfDigits(object):
 
             total_predictions.append(pred_labels.cpu())
             total_targets.append(target)
+            scores.append(rand_score(target.cpu().squeeze(), pred_labels.cpu().squeeze()))
 
             # totals[item_size] += 1
 
@@ -286,17 +284,18 @@ class SumOfDigits(object):
         total_predictions = torch.cat(total_predictions)
         total_targets = torch.cat(total_targets)
         total_losses = torch.hstack(total_losses)
+        scores = np.hstack(scores)
         x_idx = np.hstack(x_idx)
 
         self.summary_writer.add_scalars('loss', {f'{data}_total_eval' : total_losses.mean()}, epoch)
         # print(corrects / totals)
 
-        score = rand_score(A, B)
+        score = rand_score(B, A)
         # score = adjusted_rand_score(A, B)
         self.summary_writer.add_scalars('metric', {f'{data}_rand_score_eval': score}, epoch)
         embeddings_dataset = dataset.embeddings_umap
         target_labels_dataset = dataset.mnist_dataset.targets.numpy()
-        self.plot_clustering_on_umap(embeddings_dataset, target_labels_dataset, label_type='Ground Truth', epoch=epoch, )
+        self.plot_clustering_on_umap(embeddings_dataset, target_labels_dataset, label_type='Ground Truth', data=data, epoch=epoch)
 
         embeddings_set_dataset = dataset.embeddings_umap[x_idx]
         target_labels_set_dataset = dataset.mnist_dataset.targets[x_idx].numpy()
@@ -304,8 +303,8 @@ class SumOfDigits(object):
         self.plot_clustering_on_umap(embeddings_set_dataset, target_labels_set_dataset, label_type=f'Ground Truth Set Dataset', data=data, epoch=epoch)
         self.plot_clustering_on_umap(embeddings_set_dataset, pred_labels_set_dataset, label_type=f'Predicted Set Dataset', data=data, epoch=epoch)
 
-        self.record_cluster_embeddings(X, Y, cluster_input_centroids=cluster_input_centroids, epoch=epoch)
-        self.record_confusion_matrix(total_predictions, total_targets, epoch)
+        self.record_cluster_embeddings(X, Y, cluster_input_centroids=cluster_input_centroids, data=data, epoch=epoch)
+        self.record_confusion_matrix(total_predictions, total_targets, epoch, data=data)
 
         torch.save(self.the_phi.state_dict(), self.checkpoints_dir / f'trained_phi_{epoch}.pt')
         torch.save(self.the_rho.state_dict(), self.checkpoints_dir / f'trained_rho_{epoch}.pt')
@@ -318,7 +317,7 @@ class SumOfDigits(object):
         color = labels
         scatter = ax.scatter(embeddings[:, 0], embeddings[:, 1], c=color, cmap="Spectral", s=0.1)
         plt.legend(*scatter.legend_elements())
-        image_path = self.figures_dir / f'umap_clusters_test_{label_type}_{epoch}.png'
+        image_path = self.figures_dir / f'{data}_umap_clusters_test_{label_type}_{epoch}.png'
         fig.savefig(image_path)
         self.record_image_tensorboard(image_path, f'umap_clusters_{label_type}', data=data, step=epoch)
         plt.close(fig)
@@ -345,7 +344,7 @@ class SumOfDigits(object):
             # plt.scatter(X[Y == i, 0], X[Y == i, 1], c=c, label=label)
 
         ax.legend()
-        image_path = self.figures_dir / f'tsne_test_{epoch}.png'
+        image_path = self.figures_dir / f'{data}_tsne_{epoch}.png'
         fig.savefig(image_path)
         self.record_image_tensorboard(image_path, 'tsne_embeddings', data=data, step=epoch)
         plt.close(fig)
@@ -355,7 +354,7 @@ class SumOfDigits(object):
         labels = range(10)
         matrix = confusion_matrix(target.cpu().numpy(), pred.cpu().numpy(), labels=labels)
         sns.heatmap(matrix, xticklabels=labels, yticklabels=labels, cmap='Blues')
-        image_path = self.figures_dir / f'conf_matrix_{epoch}.png'
+        image_path = self.figures_dir / f'{data}_conf_matrix_{epoch}.png'
         plt.savefig(image_path)
         self.record_image_tensorboard(image_path, 'confusion_matrix', data=data)
         plt.close()
@@ -364,4 +363,4 @@ class SumOfDigits(object):
         img = Image.open(image_path)
         img_tensor = transforms.ToTensor()(img)
         self.summary_writer.add_image(label, img_tensor, global_step=step)
-        wandb.log({f'{data}_label' : wandb.Image(str(image_path)), 'step': step})
+        wandb.log({f'{data}_{label}' : wandb.Image(str(image_path)), 'step': step})
