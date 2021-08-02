@@ -15,7 +15,8 @@ MNIST_MEAN = 0.1307
 MNIST_STD = 0.3081
 MNIST_TRANSFORM = Compose([ToTensor(), Normalize((MNIST_MEAN,), (MNIST_STD,))])
 
-from cuml.manifold.umap import UMAP
+# from cuml.manifold.umap import UMAP
+from umap import UMAP
 from pathlib import Path
 class MNISTSummation(Dataset):
     def __init__(self, **kwargs):
@@ -67,7 +68,7 @@ class MNISTSummation(Dataset):
             print('Computing UMAP embeddings..')
             imgs = []
             targets = []
-            for img, target in self.mnist_dataset:
+            for img, target in zip(self.mnist_data, self.mnist_labels):
                 imgs.append(img)
                 targets.append(target)
             imgs = torch.cat(imgs)

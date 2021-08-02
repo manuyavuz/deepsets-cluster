@@ -7,6 +7,7 @@ from deepsets.experiments import SumOfDigits
 from deepsets.settings import RANDOM_SEED
 
 @click.command()
+@click.option('--exp', envvar='EXP', default='cluster', show_default=True, type=click.Choice(['cluster', 'classify']))
 @click.option('--lr', envvar='LR', default=1e-3, show_default=True)
 @click.option('--wd', envvar='WD', default=5e-3, show_default=True)
 @click.option('--n-epochs', envvar='N_EPOCHS', default=20, show_default=True)

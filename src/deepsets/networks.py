@@ -57,11 +57,11 @@ class InvariantModel(nn.Module):
 class SmallMNISTCNNPhi(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
-        self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
-        self.conv2_drop = nn.Dropout2d(p=0.2)
+        self.conv1 = nn.Conv2d(1, 10, kernel_size=1)
+        self.conv2 = nn.Conv2d(10, 20, kernel_size=1)
+        self.conv2_drop = nn.Dropout2d(0.0)
         self.fc1 = nn.Linear(320, 50)
-        self.fc1_drop = nn.Dropout2d(p=0.2)
+        self.fc1_drop = nn.Dropout2d(0.0)
         self.fc2 = nn.Linear(50, 10)
 
     def forward(self, x: NetIO) -> NetIO:
@@ -79,7 +79,7 @@ class SmallRho(nn.Module):
         self.output_size = output_size
 
         self.fc1 = nn.Linear(self.input_size, 10)
-        self.dropout1 = nn.Dropout(p=0.2)
+        self.dropout1 = nn.Dropout(p=0.0)
         self.fc2 = nn.Linear(10, self.output_size)
 
     def forward(self, x: NetIO) -> NetIO:
@@ -88,7 +88,7 @@ class SmallRho(nn.Module):
 
 
 class ClusterClf(nn.Module):
-    def __init__(self, input_size: int, output_size: int):
+    def __init__(self, input_size: int, output_size: int, return_softmax=True):
         super().__init__()
         self.input_size = input_size
         self.output_size = output_size
@@ -96,9 +96,12 @@ class ClusterClf(nn.Module):
         self.net = nn.Sequential(
             self.fc1
         )
+        self.return_softmax = return_softmax
 
     def forward(self, x: NetIO, y=None) -> NetIO:
-        x = F.softmax(self.net(x), dim=1)
+        x = self.net(x)
+        if self.return_softmax:
+            x = F.softmax(x, dim=1)
         return x
 
 

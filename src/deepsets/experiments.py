@@ -10,7 +10,7 @@ import os
 from cuml.manifold.t_sne import TSNE
 
 from matplotlib import pyplot as plt
-from sklearn.metrics import rand_score, adjusted_rand_score, confusion_matrix
+from sklearn.metrics import accuracy_score, rand_score, adjusted_rand_score, confusion_matrix
 
 from .datasets import MNISTSummation, MNIST_MEAN, MNIST_STD, MNIST_TRANSFORM
 from .networks import InvariantModel, SmallMNISTCNNPhi, SmallRho, ClusterClf, OracleClf
@@ -52,6 +52,7 @@ class SumOfDigits(object):
         self.loss_type = kwargs['loss']
         self.similarity_metric = kwargs['similarity_metric']
         self.iterative_optimization = kwargs['iterative_optimization']
+        self.experiment = kwargs['exp']
 
         if classifier_type == 'oracle':
             classifier = OracleClf
@@ -69,9 +70,11 @@ class SumOfDigits(object):
         self.logs_dir.mkdir(exist_ok=True, parents=True)
 
 
-        self.clf = classifier(input_size=10, output_size=10)
-
         self.the_phi = SmallMNISTCNNPhi()
+        if self.experiment == 'classify':
+            self.clf = classifier(input_size=10, output_size=10)
+        else:
+            self.clf = classifier(input_size=10, output_size=10, return_softmax=False)
         self.the_rho = SmallRho(input_size=10, output_size=10)
 
         if encoder_type in ['pretrained', 'finetune']:
@@ -148,9 +151,9 @@ class SumOfDigits(object):
 
         self.summary_writer.add_scalar('train_cross_entropy', log_loss(target.squeeze().detach().cpu().numpy(), w.detach().cpu().numpy()), global_step=n_train_steps)
         
-        target = torch.squeeze(target).cpu().numpy()
+        target = torch.squeeze(target).cpu()
 
-        the_loss = self.calculate_loss(pred, w, w_orig, pred_labels, epoch=n_train_steps, record=True)
+        the_loss = self.calculate_loss(target, pred, w, w_orig, pred_labels, epoch=n_train_steps, record=True)
         the_loss.backward()
         self.optimizer.step()
 
@@ -204,35 +207,42 @@ class SumOfDigits(object):
             }, global_step=epoch)
         return pred_labels_entropy
 
-    def calculate_loss(self, pred, w, w_orig, pred_labels, epoch=None, record=False):
+    def calculate_loss(self, target, pred, w, w_orig, pred_labels, epoch=None, record=False):
         losses = {}
         loss = 0
-        contrastive_loss = self.calculate_contrastive_loss(pred)
-        loss += contrastive_loss
-        losses['contrastive'] = contrastive_loss
-        if self.loss_type == 'contrastive_entropic_reg':
-            entropy_loss = self.calculate_entropy_loss(w, w_orig, pred_labels, epoch=epoch, record=record)
-            loss += 10 * entropy_loss
-            losses['entropy'] = entropy_loss
-
-
-        losses['total'] = loss
+        if self.experiment == 'classify':
+            loss_fn = torch.nn.CrossEntropyLoss()
+            loss = loss_fn(w_orig, target.squeeze().to(w_orig.device))
+            losses['cross-entropy'] = loss
+            losses['total'] = loss
+        else:
+            contrastive_loss = self.calculate_contrastive_loss(pred)
+            loss += contrastive_loss
+            losses['contrastive'] = contrastive_loss
+            if self.loss_type == 'contrastive_entropic_reg':
+                entropy_loss = self.calculate_entropy_loss(w, w_orig, pred_labels, epoch=epoch, record=record)
+                loss += 10 * entropy_loss
+                losses['entropy'] = entropy_loss
+            losses['total'] = loss
         if record:
             self.summary_writer.add_scalars('loss', losses, epoch)
         return loss
 
+    def calculate_metrics(self, y_true, y_pred, total_losses=None, data=None, epoch=None,):
+        self.summary_writer.add_scalars('loss', {f'{data}_total_eval' : total_losses.mean()}, epoch)
+        if self.experiment == 'classify':
+            metric = accuracy_score
+        else:
+            metric = rand_score
+        score = metric(y_true.cpu().numpy(), y_pred.cpu().numpy())
+        self.summary_writer.add_scalars('metric', {f'{data}_{metric.__name__}_eval': score}, epoch)
+
     def evaluate(self, epoch, data='val'):
         self.model.eval()
-        # totals = [0] * 51
-        # corrects = [0] * 51
         if data == 'val':
             dataset = self.test_db
         elif data == 'train':
             dataset = self.train_db
-        X = np.zeros([len(dataset) * 10, 10])
-        Y = np.zeros(len(dataset) * 10, dtype=int)
-        A = np.zeros(len(dataset) * self.set_size, dtype=int)
-        B = np.zeros(len(dataset) * self.set_size, dtype=int)
 
         total_predictions = []
         total_targets = []
@@ -240,6 +250,7 @@ class SumOfDigits(object):
         cluster_input_centroids = [[] for i in range(self.model.rho.output_size)]
         x_idx = []
         scores = []
+        cluster_representations = []
         for i in trange(len(dataset), leave=False):
             x, target = dataset.__getitem__(i)
             x_idx.append(dataset.mnist_items[i])
@@ -250,60 +261,37 @@ class SumOfDigits(object):
             result = self.model.forward(x, target)
             pred, w, w_orig = result.out, result.w_out, result.w_orig
 
-            pred_labels = torch.argmax(w.data, dim=1).unsqueeze(-1)
-            the_loss = self.calculate_loss(pred, w, w_orig, pred_labels.cpu().numpy())
+            pred_labels = torch.argmax(w, dim=1).unsqueeze(-1)
+            the_loss = self.calculate_loss(target, pred, w, w_orig, pred_labels)
             total_losses.append(the_loss.detach().cpu())
-
-            pred = pred.data[0]
-
-            A[i * self.set_size: (i + 1) * self.set_size] = torch.squeeze(pred_labels).cpu().numpy()
 
             for c in np.arange(10):
                 cluster_input_centroids[c].append(x[pred_labels == c, ::].detach().cpu().numpy())
 
-            # if torch.cuda.is_available():
-            # pred = pred.cpu().numpy().flatten()
-            X[i * 10: (i + 1) * 10] = pred.cpu().numpy()
-
-            # pred = int(round(float(pred[0])))
-            # target = int(round(float(target.numpy()[0])))
-            B[i * self.set_size: (i + 1) * self.set_size] = torch.squeeze(target).cpu().numpy()
-            Y[i * 10: (i + 1) * 10] = np.arange(10)
-
+            cluster_representations.append(pred.detach().cpu())
             total_predictions.append(pred_labels.cpu())
             total_targets.append(target)
             scores.append(rand_score(target.cpu().squeeze(), pred_labels.cpu().squeeze()))
 
-            # totals[item_size] += 1
-
-            # if pred == target:
-            #     corrects[item_size] += 1
-
-        # totals = np.array(totals)
-        # corrects = np.array(corrects)
         total_predictions = torch.cat(total_predictions)
         total_targets = torch.cat(total_targets)
         total_losses = torch.hstack(total_losses)
         scores = np.hstack(scores)
         x_idx = np.hstack(x_idx)
 
-        self.summary_writer.add_scalars('loss', {f'{data}_total_eval' : total_losses.mean()}, epoch)
-        # print(corrects / totals)
+        self.calculate_metrics(total_targets, total_predictions, total_losses=total_losses, epoch=epoch, data=data)
 
-        score = rand_score(B, A)
-        # score = adjusted_rand_score(A, B)
-        self.summary_writer.add_scalars('metric', {f'{data}_rand_score_eval': score}, epoch)
         embeddings_dataset = dataset.embeddings_umap
-        target_labels_dataset = dataset.mnist_dataset.targets.numpy()
+        target_labels_dataset = dataset.mnist_labels.numpy()
         self.plot_clustering_on_umap(embeddings_dataset, target_labels_dataset, label_type='Ground Truth', data=data, epoch=epoch)
 
         embeddings_set_dataset = dataset.embeddings_umap[x_idx]
-        target_labels_set_dataset = dataset.mnist_dataset.targets[x_idx].numpy()
+        target_labels_set_dataset = dataset.mnist_labels[x_idx].numpy()
         pred_labels_set_dataset = total_predictions
         self.plot_clustering_on_umap(embeddings_set_dataset, target_labels_set_dataset, label_type=f'Ground Truth Set Dataset', data=data, epoch=epoch)
         self.plot_clustering_on_umap(embeddings_set_dataset, pred_labels_set_dataset, label_type=f'Predicted Set Dataset', data=data, epoch=epoch)
 
-        self.record_cluster_embeddings(X, Y, cluster_input_centroids=cluster_input_centroids, data=data, epoch=epoch)
+        # self.record_cluster_embeddings(cluster_representations, cluster_input_centroids=cluster_input_centroids, data=data, epoch=epoch)
         self.record_confusion_matrix(total_predictions, total_targets, epoch, data=data)
 
         torch.save(self.the_phi.state_dict(), self.checkpoints_dir / f'trained_phi_{epoch}.pt')
@@ -322,32 +310,32 @@ class SumOfDigits(object):
         self.record_image_tensorboard(image_path, f'umap_clusters_{label_type}', data=data, step=epoch)
         plt.close(fig)
         
-    def record_cluster_embeddings(self, X, Y, cluster_input_centroids=None, data='val', epoch=None):
-        tsne = TSNE(n_components=2, random_state=0)
-        X_2d = tsne.fit_transform(X)
+    # def record_cluster_embeddings(self, cluster_representations, cluster_input_centroids=None, data='val', epoch=None):
+    #     tsne = TSNE(n_components=2, random_state=0)
+    #     X_2d = tsne.fit_transform(X)
 
-        target_ids = range(10)
-        fig, ax = plt.subplots(figsize=(6, 5))
-        colors = 'r', 'g', 'b', 'c', 'm', 'y', 'k', 'brown', 'orange', 'purple'
-        for i, c, label in zip(target_ids, colors, target_ids):
-            x_coords = X_2d[Y == i, 0]
-            y_coords = X_2d[Y == i, 1]
-            ax.scatter(x_coords, y_coords, c=c, label=label)
+    #     target_ids = range(10)
+    #     fig, ax = plt.subplots(figsize=(6, 5))
+    #     colors = 'r', 'g', 'b', 'c', 'm', 'y', 'k', 'brown', 'orange', 'purple'
+    #     for i, c, label in zip(target_ids, colors, target_ids):
+    #         x_coords = X_2d[Y == i, 0]
+    #         y_coords = X_2d[Y == i, 1]
+    #         ax.scatter(x_coords, y_coords, c=c, label=label)
 
-            x_centroid = x_coords.mean()
-            y_centroid = y_coords.mean()
-            centroid_image = np.vstack(cluster_input_centroids[i]).mean(axis=0)
-            centroid_image_unnormalized = centroid_image * MNIST_STD + MNIST_MEAN
-            ab = AnnotationBbox(OffsetImage(centroid_image_unnormalized.squeeze()), (x_centroid, y_centroid), frameon=False)
-            ax.add_artist(ab)
+    #         x_centroid = x_coords.mean()
+    #         y_centroid = y_coords.mean()
+    #         centroid_image = np.vstack(cluster_input_centroids[i]).mean(axis=0)
+    #         centroid_image_unnormalized = centroid_image * MNIST_STD + MNIST_MEAN
+    #         ab = AnnotationBbox(OffsetImage(centroid_image_unnormalized.squeeze()), (x_centroid, y_centroid), frameon=False)
+    #         ax.add_artist(ab)
 
-            # plt.scatter(X[Y == i, 0], X[Y == i, 1], c=c, label=label)
+    #         # plt.scatter(X[Y == i, 0], X[Y == i, 1], c=c, label=label)
 
-        ax.legend()
-        image_path = self.figures_dir / f'{data}_tsne_{epoch}.png'
-        fig.savefig(image_path)
-        self.record_image_tensorboard(image_path, 'tsne_embeddings', data=data, step=epoch)
-        plt.close(fig)
+    #     ax.legend()
+    #     image_path = self.figures_dir / f'{data}_tsne_{epoch}.png'
+    #     fig.savefig(image_path)
+    #     self.record_image_tensorboard(image_path, 'tsne_embeddings', data=data, step=epoch)
+    #     plt.close(fig)
 
     def record_confusion_matrix(self, pred, target, epoch, data='val'):
         plt.figure()
